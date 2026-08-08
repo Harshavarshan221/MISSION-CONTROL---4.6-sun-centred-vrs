@@ -30,25 +30,34 @@ import TimeAssignmentDialog from "@/components/planet/TimeAssignmentDialog";
 import PlanetGhost from "@/components/planet/PlanetGhost";
 import { fadeUpVariants, wheelEntranceVariants } from "@/components/MotionEffects";
 
-const CX = 300;
-const CY = 300;
-const VIEWBOX_SIZE = 600;
+const CX = 360;
+const CY = 360;
+const VIEWBOX_SIZE = 720;
 
-// Orbit stack, innermost (morning) to outermost (evening). Helio sits
-// far smaller than the old Mission Control card did (140-170px fixed
-// vs. a 38%-of-stage panel), so this phase doesn't need to touch the
-// ring radii to make room — the freed space around the hub reads as
-// breathing room on its own.
-const ORBIT_RADII = [170, 225, 280];
-const LABEL_ANGLE = -46;
+// Orbit stack, innermost (morning) to outermost (evening). Phase 6
+// widens the gap between rings a little further still (~75-80 vs.
+// Phase 5's ~70) and grows the stage to match, giving the busiest ring
+// (evening — the widest scheduling window, so usually the most
+// crowded) extra breathing room without dramatically enlarging the
+// whole system.
+const ORBIT_RADII = [190, 265, 345];
+// Every ring's label sits at the same angle EXCEPT the final/largest
+// one (evening): that ring tends to carry the most deployed planets,
+// and Phase 5's single shared LABEL_ANGLE put its tag right where
+// those planets' own name/time labels cluster. Moving just that one
+// tag to the opposite side of the ring (roughly 180deg around) gives
+// it a quiet stretch of its own instead.
+const LABEL_ANGLES = [-46, -46, 134];
 // Where the "+" empty-orbit marker sits on each ring — a quiet spot
-// clear of the orbit's label tag.
+// clear of the orbit's label tag. Only shown when a ring is empty (no
+// planet labels onscreen to collide with), so it stays shared across
+// all three rings even though the evening ring's label moved.
 const PLACEHOLDER_ANGLE = 132;
 // How far (in viewBox units) the pointer may sit from a ring's exact
 // radius and still count as a drop on that ring — roughly half the
 // gap between rings plus a little slack, so a drop anywhere near a
 // ring resolves to it rather than requiring pixel-perfect aim.
-const ORBIT_HIT_BAND = 45;
+const ORBIT_HIT_BAND = 48;
 
 interface PendingAssignment {
   planet: Planet;
@@ -261,6 +270,10 @@ export default function UniverseLayout({ day }: UniverseLayoutProps) {
                   <stop offset="100%" stopColor={t.gradientStops.edge} />
                 </radialGradient>
               ))}
+              {/* Generated-asset planet art is embedded directly by
+                  PlacedPlanet as a clipped <image> (per-planet clipPath,
+                  since it needs that planet's actual on-ring position) —
+                  no shared pattern def needed here. */}
             </defs>
 
             {/* orbit drop zones, sequenced innermost (morning) outward */}
@@ -271,12 +284,19 @@ export default function UniverseLayout({ day }: UniverseLayoutProps) {
                 cx={CX}
                 cy={CY}
                 radius={ORBIT_RADII[i]}
-                labelAngle={LABEL_ANGLE}
+                labelAngle={LABEL_ANGLES[i]}
                 placeholderAngle={PLACEHOLDER_ANGLE}
                 index={i}
                 planets={getPlanetsForOrbit(planets, orbit)}
                 conflictPlanetId={conflictPlanetId}
+                selectedPlanetId={menuTarget?.planet.id ?? null}
                 onSelectPlanet={handleSelectPlacedPlanet}
+                pendingPlanet={
+                  pendingAssignment && pendingAssignment.orbit.id === orbit.id
+                    ? pendingAssignment.planet
+                    : null
+                }
+                emphasizeLabel={i === ORBITS.length - 1}
               />
             ))}
           </svg>
@@ -356,7 +376,7 @@ export default function UniverseLayout({ day }: UniverseLayoutProps) {
         <TimeAssignmentDialog
           open={pendingAssignment !== null}
           mode={pendingAssignment?.fromOrbit ? "move" : "assign"}
-          planetName={pendingAssignment?.planet.name ?? ""}
+          planet={pendingAssignment?.planet ?? null}
           orbit={pendingAssignment?.orbit ?? null}
           fromOrbitLabel={
             pendingAssignment?.fromOrbit ? getOrbitById(pendingAssignment.fromOrbit)?.label : null
@@ -379,10 +399,8 @@ export default function UniverseLayout({ day }: UniverseLayoutProps) {
         <TimeAssignmentDialog
           open={editingTime !== null}
           mode="edit"
-          planetName={editingTime?.planet.name ?? ""}
+          planet={editingTime?.planet ?? null}
           orbit={editingTime?.orbit ?? null}
-          initialStart={editingTime?.planet.startTime}
-          initialEnd={editingTime?.planet.endTime}
           planets={planets}
           excludePlanetId={editingTime?.planet.id}
           onClose={() => setEditingTime(null)}

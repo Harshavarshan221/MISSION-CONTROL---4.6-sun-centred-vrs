@@ -63,8 +63,8 @@ function generateParticles(count: number): Particle[] {
 
 export default function GalaxyBackground() {
   const prefersReducedMotion = useReducedMotion();
-  const stars = useMemo(() => generateStars(140), []);
-  const particles = useMemo(() => generateParticles(22), []);
+  const stars = useMemo(() => generateStars(170), []);
+  const particles = useMemo(() => generateParticles(26), []);
 
   return (
     <div className="pointer-events-none fixed inset-0 -z-10 overflow-hidden bg-void">
@@ -95,6 +95,19 @@ export default function GalaxyBackground() {
           background:
             "radial-gradient(circle, rgba(245,165,36,0.10) 0%, rgba(245,165,36,0) 70%)",
           animationDelay: "-13s",
+        }}
+      />
+
+      {/* faint deep-space haze, off-center and stationary — one more
+          layer of depth behind the drifting blobs, kept extremely
+          subtle (low opacity, no animation) so it reads as atmosphere
+          rather than another visible shape */}
+      <div
+        aria-hidden="true"
+        className="absolute left-1/2 top-1/2 h-[85vmax] w-[85vmax] -translate-x-1/2 -translate-y-1/2 rounded-full opacity-[0.12] blur-3xl"
+        style={{
+          background:
+            "radial-gradient(circle, rgba(139,150,172,0.10) 0%, rgba(139,150,172,0) 60%)",
         }}
       />
 

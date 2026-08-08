@@ -1,102 +1,139 @@
 "use client";
 
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { X, AlertTriangle } from "lucide-react";
+import { X, Rocket, Satellite, CheckCircle2 } from "lucide-react";
 import type { OrbitInfo } from "@/lib/orbits";
-import { generateOrbitTimeSlots, findTimeConflict } from "@/lib/scheduling";
+import { buildOrbitTimeline, formatTimeRangeLabel, timeToOrbitMinutes } from "@/lib/scheduling";
 import type { Planet } from "@/types/planet";
-import { dialogFadeVariants, dialogPanelVariants } from "@/components/MotionEffects";
+import PlanetGlyph from "@/components/planet/Planet";
+import { dialogFadeVariants, sheetSlideVariants } from "@/components/MotionEffects";
 
 interface TimeAssignmentDialogProps {
   open: boolean;
   mode: "assign" | "edit" | "move";
-  planetName: string;
+  /** The planet being assigned/moved/edited — carries type + name so the expanded Mission Slot can show its generated art. */
+  planet: Planet | null;
+  /** The orbit this deployment targets. Fixed for the lifetime of the console — set once from the drop/action that opened it and never re-derived, so the planet always lands in the orbit it was dropped on. */
   orbit: OrbitInfo | null;
   /** Orbit label the planet is moving from — shown only in "move" mode. */
   fromOrbitLabel?: string | null;
-  initialStart?: string | null;
-  initialEnd?: string | null;
-  /** Every planet, so the currently selected time can be checked for overlaps against whatever's already deployed in `orbit`. */
+  /** Every planet, so the panel can lay out the orbit's complete occupied/open timeline. */
   planets: Planet[];
-  /** The planet being assigned/moved/edited — excluded from its own conflict check. */
+  /** The planet being assigned/moved/edited — excluded from the timeline so its own current slot (if any) reopens instead of blocking itself. */
   excludePlanetId?: string;
   onClose: () => void;
   onSave: (startTime: string, endTime: string) => void;
-  /** Fires whenever the live conflict target changes, so the ring can highlight it. Called with null when there's no conflict or the dialog is closed. */
+  /** Retained for API compatibility with existing callers. The timeline only ever offers already-open gaps, so nothing here can conflict — always fires with null. */
   onConflictChange?: (conflictPlanetId: string | null) => void;
 }
 
+interface SelectedSlot {
+  startTime: string;
+  endTime: string;
+}
+
 /**
- * The dialog that turns a drop (or an "Edit Time" action) into an
- * actual schedule entry: the planet's name read-only, a Start Time and
- * End Time restricted to the target orbit's allowed window, and Save.
- * This is the one place start/end times get chosen — the orbit's
- * window is the hard constraint, so invalid combinations are simply
- * not offered as options.
+ * MISSION DEPLOYMENT CONSOLE — the compact side panel that turns a
+ * drop (or an "Edit Time" action) into an actual schedule entry.
+ *
+ * Lays out the destination orbit's entire day as a single
+ * chronological timeline — every planet already deployed there
+ * (MISSION ACTIVE) interleaved with every open gap between them
+ * (MISSION SLOT) — so occupied time and available time are never shown
+ * separately.
+ *
+ * Tapping "Launch Mission" on an open slot does NOT save immediately.
+ * It expands that one slot inline into a small deployment form —
+ * selected planet, and start/end time fields defaulted to (and
+ * clamped within) that slot's bounds — and only "Confirm Schedule"
+ * commits it. The orbit itself is fixed for the whole flow (passed in
+ * once as `orbit`), so whichever slot the user launches and confirms,
+ * the planet is deployed into the orbit it was dropped on — never
+ * somewhere else, never back to the dock.
+ *
+ * Cancel — the header's X, ESC, or clicking outside the panel —
+ * always closes the console without saving anything, regardless of
+ * whether a slot is currently expanded.
+ *
+ * The solar system stays visible behind the panel — this is a slide-in
+ * console, not a full-screen modal.
  */
 export default function TimeAssignmentDialog({
   open,
   mode,
-  planetName,
+  planet,
   orbit,
   fromOrbitLabel,
-  initialStart,
-  initialEnd,
   planets,
   excludePlanetId,
   onClose,
   onSave,
   onConflictChange,
 }: TimeAssignmentDialogProps) {
-  const [startTime, setStartTime] = useState("");
-  const [endTime, setEndTime] = useState("");
+  const [selectedSlot, setSelectedSlot] = useState<SelectedSlot | null>(null);
+  const [editStart, setEditStart] = useState("");
+  const [editEnd, setEditEnd] = useState("");
+
+  // Fresh console every time it opens — no slot carried over from a
+  // previous deployment, and nothing pre-selected from a slot that
+  // isn't onscreen anymore.
+  useEffect(() => {
+    if (!open) {
+      setSelectedSlot(null);
+      setEditStart("");
+      setEditEnd("");
+    }
+  }, [open]);
 
   useEffect(() => {
-    if (!open || !orbit) return;
-    const slots = generateOrbitTimeSlots(orbit);
-    const start = initialStart && slots.includes(initialStart) ? initialStart : slots[0];
-    const startIndex = slots.indexOf(start);
-    const end =
-      initialEnd && slots.includes(initialEnd) && slots.indexOf(initialEnd) > startIndex
-        ? initialEnd
-        : slots[Math.min(startIndex + 1, slots.length - 1)];
-    setStartTime(start);
-    setEndTime(end);
-  }, [open, orbit, initialStart, initialEnd]);
-
-  // Live conflict check (Priority 12 / Case 4): re-evaluated on every
-  // start/end change so the Save button is disabled and the offending
-  // planet is named *before* the user tries to submit, not after.
-  const conflict =
-    open && orbit ? findTimeConflict(planets, orbit, startTime, endTime, excludePlanetId) : null;
-
-  useEffect(() => {
-    onConflictChange?.(open ? conflict?.id ?? null : null);
-    // Clear the highlight on unmount / close too.
-    return () => onConflictChange?.(null);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, conflict?.id]);
+    if (!open) return;
+    function handleKeyDown(e: KeyboardEvent) {
+      if (e.key === "Escape") {
+        onConflictChange?.(null);
+        onClose();
+      }
+    }
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [open, onClose, onConflictChange]);
 
   if (!orbit) return null;
 
-  const slots = generateOrbitTimeSlots(orbit);
-  const startIndex = slots.indexOf(startTime);
-  const startOptions = slots.slice(0, -1);
-  const endOptions = slots.filter((_, i) => i > startIndex);
+  const timeline = open ? buildOrbitTimeline(planets, orbit, excludePlanetId) : [];
+  const hasOpenSlot = timeline.some((entry) => entry.type === "open");
 
-  function handleStartChange(value: string) {
-    setStartTime(value);
-    const newStartIndex = slots.indexOf(value);
-    if (slots.indexOf(endTime) <= newStartIndex) {
-      setEndTime(slots[newStartIndex + 1] ?? slots[slots.length - 1]);
-    }
+  function handleClose() {
+    onConflictChange?.(null);
+    onClose();
   }
 
-  function handleSubmit(e: FormEvent) {
-    e.preventDefault();
-    if (!startTime || !endTime || conflict) return;
-    onSave(startTime, endTime);
+  function handleSelectSlot(slot: SelectedSlot) {
+    setSelectedSlot(slot);
+    setEditStart(slot.startTime);
+    setEditEnd(slot.endTime);
+  }
+
+  // Times must stay inside the launched slot's own window — the slot
+  // IS the allowed range, nothing outside it is selectable.
+  const slotStartMin = selectedSlot && orbit ? timeToOrbitMinutes(selectedSlot.startTime, orbit) : null;
+  const slotEndMin = selectedSlot && orbit ? timeToOrbitMinutes(selectedSlot.endTime, orbit) : null;
+  const editStartMin = editStart && orbit ? timeToOrbitMinutes(editStart, orbit) : null;
+  const editEndMin = editEnd && orbit ? timeToOrbitMinutes(editEnd, orbit) : null;
+
+  const timesInBounds =
+    slotStartMin !== null &&
+    slotEndMin !== null &&
+    editStartMin !== null &&
+    editEndMin !== null &&
+    editStartMin >= slotStartMin &&
+    editEndMin <= slotEndMin &&
+    editStartMin < editEndMin;
+
+  function handleConfirm() {
+    if (!selectedSlot || !timesInBounds) return;
+    onConflictChange?.(null);
+    onSave(editStart, editEnd);
   }
 
   return (
@@ -107,41 +144,42 @@ export default function TimeAssignmentDialog({
           initial="hidden"
           animate="visible"
           exit="hidden"
-          className="fixed inset-0 z-50 flex items-center justify-center bg-void/70 px-6 backdrop-blur-sm"
-          onClick={onClose}
+          className="fixed inset-0 z-50 flex items-stretch justify-end sm:items-center sm:p-4"
+          // No dimming scrim: the whole point of the console is that the
+          // solar system stays visible and in-context behind it.
+          onClick={handleClose}
         >
-          <motion.form
-            variants={dialogPanelVariants}
+          <motion.div
+            variants={sheetSlideVariants}
             initial="hidden"
             animate="visible"
             exit="hidden"
             onClick={(e) => e.stopPropagation()}
-            onSubmit={handleSubmit}
             role="dialog"
             aria-modal="true"
-            aria-labelledby="time-assignment-title"
-            className="glass-panel-strong w-full max-w-[380px] rounded-2xl p-6 shadow-[0_0_60px_rgba(34,211,238,0.12)]"
+            aria-labelledby="mission-deployment-title"
+            className="glass-panel-strong flex h-full w-full max-w-[360px] min-w-[320px] flex-col shadow-[0_0_60px_rgba(34,211,238,0.12)] sm:h-auto sm:max-h-[85vh] sm:rounded-2xl"
           >
-            <div className="mb-5 flex items-start justify-between">
+            <div className="flex items-start justify-between gap-3 border-b border-line p-5">
               <div>
-                <p className="mb-1 font-mono text-[8px] uppercase tracking-widest2 text-amber-hud/80">
-                  {orbit.label}
+                <p className="mb-1 flex items-center gap-1.5 font-mono text-[8px] uppercase tracking-widest2 text-amber-hud/80">
+                  <Satellite size={10} />
+                  Mission Deployment Console
                 </p>
                 <h2
-                  id="time-assignment-title"
+                  id="mission-deployment-title"
                   className="font-display text-sm uppercase tracking-wide text-ink-primary"
                 >
-                  {mode === "assign" ? "Assign Orbit Time" : mode === "move" ? "Move to New Orbit" : "Edit Orbit Time"}
+                  {planet?.name ?? ""}
                 </h2>
-                {mode === "move" && fromOrbitLabel && (
-                  <p className="mt-1 font-mono text-[8px] uppercase tracking-widest2 text-ink-faint">
-                    From {fromOrbitLabel}
-                  </p>
-                )}
+                <p className="mt-1 font-mono text-[8px] uppercase tracking-widest2 text-ink-faint">
+                  {mode === "move" && fromOrbitLabel ? `${fromOrbitLabel} \u2192 ` : ""}
+                  {orbit.label}
+                </p>
               </div>
               <button
                 type="button"
-                onClick={onClose}
+                onClick={handleClose}
                 aria-label="Cancel"
                 className="text-ink-faint transition-colors hover:text-ink-primary"
               >
@@ -149,82 +187,140 @@ export default function TimeAssignmentDialog({
               </button>
             </div>
 
-            <label className="mb-4 block">
-              <span className="mb-1.5 block font-mono text-[9px] uppercase tracking-widest2 text-ink-secondary">
-                Planet Name
-              </span>
-              <input
-                value={planetName}
-                readOnly
-                disabled
-                className="w-full rounded-lg border border-line bg-white/[0.02] px-3 py-2 font-body text-sm text-ink-secondary outline-none"
-              />
-            </label>
+            <div className="flex-1 overflow-y-auto p-4">
+              <ol className="space-y-2">
+                {timeline.map((entry, i) => {
+                  if (entry.type === "occupied") {
+                    return (
+                      <li
+                        key={entry.planet.id}
+                        className="rounded-xl border border-line bg-white/[0.02] px-3.5 py-3"
+                      >
+                        <p className="font-mono text-[9px] uppercase tracking-widest2 text-ink-faint">
+                          {formatTimeRangeLabel(entry.planet.startTime, entry.planet.endTime)}
+                        </p>
+                        <p className="mt-1 font-body text-sm text-ink-secondary">{entry.planet.name}</p>
+                        <p className="mt-1.5 font-mono text-[8px] uppercase tracking-widest2 text-cyan-glow/80">
+                          Mission Active
+                        </p>
+                      </li>
+                    );
+                  }
 
-            <div className="mb-2 grid grid-cols-2 gap-3">
-              <label className="block">
-                <span className="mb-1.5 block font-mono text-[9px] uppercase tracking-widest2 text-ink-secondary">
-                  Start Time
-                </span>
-                <select
-                  value={startTime}
-                  onChange={(e) => handleStartChange(e.target.value)}
-                  className="w-full rounded-lg border border-line bg-white/[0.03] px-2 py-2 font-mono text-xs text-ink-primary outline-none focus:border-cyan-glow/60"
-                >
-                  {startOptions.map((s) => (
-                    <option key={s} value={s}>
-                      {s}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label className="block">
-                <span className="mb-1.5 block font-mono text-[9px] uppercase tracking-widest2 text-ink-secondary">
-                  End Time
-                </span>
-                <select
-                  value={endTime}
-                  onChange={(e) => setEndTime(e.target.value)}
-                  className="w-full rounded-lg border border-line bg-white/[0.03] px-2 py-2 font-mono text-xs text-ink-primary outline-none focus:border-cyan-glow/60"
-                >
-                  {endOptions.map((s) => (
-                    <option key={s} value={s}>
-                      {s}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            </div>
-            <p className="mb-4 font-mono text-[8px] uppercase tracking-widest2 text-ink-faint">
-              {orbit.label} window: {orbit.timeRange}
-            </p>
+                  const isSelected =
+                    selectedSlot !== null &&
+                    selectedSlot.startTime === entry.startTime &&
+                    selectedSlot.endTime === entry.endTime;
 
-            {conflict && (
-              <div className="mb-4 flex items-start gap-2 rounded-lg border border-red-400/40 bg-red-500/10 px-3 py-2.5">
-                <AlertTriangle size={13} className="mt-0.5 shrink-0 text-red-300" />
-                <p className="font-mono text-[9px] uppercase tracking-widest2 text-red-300">
-                  Conflicts with {conflict.name} ({conflict.startTime}–{conflict.endTime}). Choose another time.
+                  if (!isSelected) {
+                    return (
+                      <li
+                        key={`open-${entry.startTime}-${i}`}
+                        className="rounded-xl border border-dashed border-amber-hud/40 bg-amber-hud/[0.04] px-3.5 py-3"
+                      >
+                        <p className="font-mono text-[9px] uppercase tracking-widest2 text-ink-faint">
+                          {formatTimeRangeLabel(entry.startTime, entry.endTime)}
+                        </p>
+                        <p className="mt-1 font-mono text-[10px] uppercase tracking-widest2 text-amber-hud">
+                          Mission Slot
+                        </p>
+                        <p className="mt-0.5 font-mono text-[8px] uppercase tracking-widest2 text-ink-faint">
+                          Ready For Deployment
+                        </p>
+                        <button
+                          type="button"
+                          onClick={() => handleSelectSlot({ startTime: entry.startTime, endTime: entry.endTime })}
+                          className="mt-2.5 inline-flex w-full items-center justify-center gap-1.5 rounded-lg bg-cyan-glow px-3 py-2 font-mono text-[9px] uppercase tracking-widest2 text-void transition-opacity hover:opacity-90"
+                        >
+                          <Rocket size={12} />
+                          Launch Mission
+                        </button>
+                      </li>
+                    );
+                  }
+
+                  // Expanded: this is the ONE slot Launch Mission was
+                  // pressed on. Everything needed to confirm the
+                  // deployment lives inline here, still inside the same
+                  // side panel — no second popup.
+                  return (
+                    <li
+                      key={`open-${entry.startTime}-${i}`}
+                      className="rounded-xl border border-cyan-glow/50 bg-cyan-glow/[0.06] px-3.5 py-3.5"
+                    >
+                      <p className="font-mono text-[8px] uppercase tracking-widest2 text-cyan-glow/80">
+                        Selected Planet
+                      </p>
+                      <div className="mt-2 flex items-center gap-2.5">
+                        {planet && <PlanetGlyph type={planet.type} size={30} glow="soft" />}
+                        <p className="font-body text-sm text-ink-primary">{planet?.name}</p>
+                      </div>
+
+                      <div className="mt-3.5 grid grid-cols-2 gap-2.5">
+                        <label className="flex flex-col gap-1">
+                          <span className="font-mono text-[8px] uppercase tracking-widest2 text-ink-faint">
+                            Start Time
+                          </span>
+                          <input
+                            type="time"
+                            value={editStart}
+                            onChange={(e) => setEditStart(e.target.value)}
+                            className="rounded-lg border border-line bg-white/[0.03] px-2 py-1.5 font-mono text-[11px] text-ink-primary outline-none focus:border-cyan-glow/60"
+                          />
+                        </label>
+                        <label className="flex flex-col gap-1">
+                          <span className="font-mono text-[8px] uppercase tracking-widest2 text-ink-faint">
+                            End Time
+                          </span>
+                          <input
+                            type="time"
+                            value={editEnd}
+                            onChange={(e) => setEditEnd(e.target.value)}
+                            className="rounded-lg border border-line bg-white/[0.03] px-2 py-1.5 font-mono text-[11px] text-ink-primary outline-none focus:border-cyan-glow/60"
+                          />
+                        </label>
+                      </div>
+
+                      <p className="mt-2 font-mono text-[8px] uppercase tracking-widest2 text-ink-faint">
+                        Must stay within {formatTimeRangeLabel(entry.startTime, entry.endTime)}
+                      </p>
+                      {!timesInBounds && (
+                        <p className="mt-1 font-mono text-[8px] uppercase tracking-widest2 text-red-400">
+                          Selected time is outside this Mission Slot
+                        </p>
+                      )}
+
+                      <button
+                        type="button"
+                        onClick={handleConfirm}
+                        disabled={!timesInBounds}
+                        className="mt-3 inline-flex w-full items-center justify-center gap-1.5 rounded-lg bg-cyan-glow px-3 py-2 font-mono text-[9px] uppercase tracking-widest2 text-void transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
+                      >
+                        <CheckCircle2 size={12} />
+                        Confirm Schedule
+                      </button>
+                    </li>
+                  );
+                })}
+              </ol>
+
+              {!hasOpenSlot && (
+                <p className="mt-4 text-center font-mono text-[9px] uppercase tracking-widest2 text-ink-faint">
+                  {orbit.label} is fully deployed — no open mission slots remain.
                 </p>
-              </div>
-            )}
+              )}
+            </div>
 
-            <div className="flex items-center justify-end gap-3">
+            <div className="flex items-center justify-end gap-3 border-t border-line p-4">
               <button
                 type="button"
-                onClick={onClose}
+                onClick={handleClose}
                 className="font-mono text-[9px] uppercase tracking-widest2 text-ink-secondary transition-colors hover:text-ink-primary"
               >
                 Cancel
               </button>
-              <button
-                type="submit"
-                disabled={!!conflict}
-                className="rounded-lg bg-cyan-glow px-4 py-2 font-mono text-[9px] uppercase tracking-widest2 text-void transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
-              >
-                Save
-              </button>
             </div>
-          </motion.form>
+          </motion.div>
         </motion.div>
       )}
     </AnimatePresence>
